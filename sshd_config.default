@@ -1,0 +1,6 @@
+AuthorizedKeysFile /data/.ssh/authorized_keys
+ChallengeResponseAuthentication no
+PasswordAuthentication yes
+PermitRootLogin yes
+Subsystem sftp internal-sftp
+pidfile /data/.ssh/sshd.pid

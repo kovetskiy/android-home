@@ -1,0 +1,184 @@
+#!/usr/bin/env ruby
+
+require "docopt"
+require "pp"
+
+usage = <<DOCOPT
+
+Android Home created for using your Android Device just as yet another Linux
+host.
+
+Services:
+    - sshd
+
+Usage:
+    setup [options]
+
+Options:
+    -s <path>    Specify sshd_config [default: __DIR__/sshd_config.default].
+    -h --help    Show this screen.
+DOCOPT
+
+
+def main(args)
+    sshd_config = args["-s"]
+
+    [
+        :adb_start,
+        :adb_root,
+        :adb_remount,
+        :set_profile,
+        :push_config,
+        :push_pub,
+        :set_profile,
+        :daemonize,
+        :start_sshd,
+    ].each{ | name |
+        if name == :push_config
+            status = method(name).call(sshd_config)
+        else
+            status = method(name).call()
+        end
+
+        if !status
+            exit
+        end
+    }
+end
+
+def adb(command)
+    command = "adb " + command
+
+    puts "$ " + command
+    output = `#{command}`
+    if output != ""
+        puts output
+    end
+
+    if $?.exitstatus != 0
+        return FALSE
+    end
+
+    return output
+end
+
+def shell(command)
+    command = "shell '" + command + "'"
+    return adb(command)
+end
+
+def push(src, dst)
+    command = "push '" + src + "' '"+dst+"'"
+    return adb(command)
+end
+
+def adb_start()
+    adb("kill-server")
+end
+
+def adb_root()
+    if !adb("root")
+        puts "can't run adbd as root"
+        return FALSE
+    end
+
+    return TRUE
+end
+
+def adb_remount()
+    # adb shell doesn't returns subprocess (sh) exit status and always exits
+    # with 0
+    if !shell("mount -o rw,remount,rw /")
+        puts "can't mount / in read-write mode"
+        return FALSE
+    end
+
+    if !shell("mount -o rw,remount,rw /system")
+        puts "can't mount /system in read-write mode"
+        return FALSE
+    end
+
+    return TRUE
+end
+
+def home_root()
+    if !shell("ln -s /root/ /data/home")
+        puts "can't link /data/home to /root/"
+        return FALSE
+    end
+
+    if !shell("mkdir /root/.bin/")
+        puts "can't create directory /root/.bin/"
+        return FALSE
+    end
+
+    return TRUE
+end
+
+def set_profile()
+    if shell("grep '/root/.profile' /system/etc/mkshrc") == ""
+        if !shell(
+            "echo \"[ -f /root/.profile ] && . /root/.profile\" "+
+                ">> /system/etc/mkshrc"
+        )
+            puts "can't add executing /root/.profile"
+            return FALSE
+        end
+    end
+
+    return TRUE
+end
+
+def push_config(sshd_config)
+    if !push(sshd_config, "/data/ssh/sshd_config")
+        puts "can't push sshd_config"
+        return FALSE
+    end
+
+    return TRUE
+end
+
+def push_pub()
+    if !push(
+            File.expand_path("~/.ssh/id_rsa.pub"),
+            "/data/.ssh/authorized_keys"
+    )
+        puts "can't push id_rsa.pub"
+        return FALSE
+    end
+
+    shell("chmod 600 /data/.ssh/authorized_keys")
+
+    return TRUE
+end
+
+def daemonize()
+    if !shell("mkdir -p /data/local/userinit.d") or
+       !shell("cat /system/bin/start-ssh " +
+           "| sed 's@/system/etc/ssh@/data/ssh/@' " +
+           "> /data/local/userinit.d/99sshd") or
+       !shell("chmod 755 /data/local/userinit.d/99sshd")
+        puts "can't daemonize sshd"
+        return FALSE
+    end
+
+    return TRUE
+end
+
+def start_sshd()
+    shell("killall sshd")
+    adb("forward tcp:2222 tcp:22")
+    shell("nohup /data/local/userinit.d/99sshd &> /dev/null &")
+
+    return TRUE
+end
+
+begin
+    main(
+        Docopt::docopt(
+            usage.sub("__DIR__", File.dirname(__FILE__))
+        )
+    )
+rescue Docopt::Exit => e
+    puts e.message
+end
